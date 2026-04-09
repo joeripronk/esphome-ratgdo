@@ -641,13 +641,13 @@ void RATGDOComponent::door_close()
         });
         return;
     }
-
-    if (this->flags_.obstruction_sensor_detected) {
+// FIX: always use DoorAction Close, otherwise the door will only close when the door is fully open
+//    if (this->flags_.obstruction_sensor_detected) {
         this->door_action(DoorAction::CLOSE);
-    } else if (*this->door_state == DoorState::OPEN) {
-        ESP_LOGD(TAG, "No obstruction sensors detected. Close using TOGGLE.");
-        this->door_action(DoorAction::TOGGLE);
-    }
+//    } else if (*this->door_state == DoorState::OPEN) {
+//        ESP_LOGD(TAG, "No obstruction sensors detected. Close using TOGGLE.");
+//        this->door_action(DoorAction::TOGGLE);
+//    }
 
     if (*this->closing_duration > 0) {
         // query state in case we don't get a status message
