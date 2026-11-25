@@ -293,6 +293,7 @@ namespace secplus2 {
                         ESP_LOG2(TAG, "Ignoring byte (%d): %s, baud: %d", this->rx_byte_count_, format_hex_pretty_to(hex, &ser_byte, 1), this->uart_.baudRate());
                     }
                     this->rx_byte_count_ = 0;
+                    this->rx_msg_start_ = 0;
                     continue;
                 }
                 this->rx_msg_start_ = ((this->rx_msg_start_ << 8) | ser_byte) & 0xffffff;
@@ -315,6 +316,12 @@ namespace secplus2 {
             while (this->uart_.available()) {
                 uint8_t ser_byte = this->uart_.read();
                 this->rx_last_read_ = millis();
+                if (this->rx_byte_count_ >= PACKET_LENGTH) {
+                    this->flags_.rx_reading_msg = false;
+                    this->rx_byte_count_ = 0;
+                    this->rx_msg_start_ = 0;
+                    continue;
+                }
                 this->rx_packet_[this->rx_byte_count_] = ser_byte;
                 this->rx_byte_count_++;
 
@@ -345,6 +352,7 @@ namespace secplus2 {
                 ESP_LOGW(TAG, "Discard incomplete packet, length: %d", this->rx_byte_count_);
                 this->flags_.rx_reading_msg = false;
                 this->rx_byte_count_ = 0;
+                this->rx_msg_start_ = 0;
             }
         }
 

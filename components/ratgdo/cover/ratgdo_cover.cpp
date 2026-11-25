@@ -18,7 +18,9 @@ void RATGDOCover::setup()
 {
     auto state = this->restore_state_();
     if (state.has_value()) {
+        this->position = state.value().position;
         this->parent_->set_door_position(state.value().position);
+        this->publish_state(false);
     }
     this->parent_->subscribe_door_state([this](DoorState state, float position) {
         this->on_door_state(state, position);

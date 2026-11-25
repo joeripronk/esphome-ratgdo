@@ -12,7 +12,7 @@
 namespace esphome::ratgdo {
 
 // Placed in IRAM because plerup's rxBitISR may fire during flash writes.
-inline void IRAM_ATTR ratgdo_wake_main_loop_from_isr() { App.wake_loop_threadsafe(); }
+inline void IRAM_ATTR ratgdo_wake_main_loop_from_isr() { App.wake_loop_isrsafe(); }
 
 // Security+ 2.0 preamble timing (microseconds)
 static constexpr uint16_t PREAMBLE_DURATION_US = 1300;
