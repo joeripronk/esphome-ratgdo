@@ -943,9 +943,11 @@ void RATGDOComponent::ensure_door_action(DoorAction action, uint32_t delay)
     }
 
     uint32_t timeout = delay;
+#ifdef RATGDO_USE_CLOSING_DELAY
     if (action == DoorAction::CLOSE) {
         timeout += *this->closing_delay * 1000;
     }
+#endif
     this->set_timeout(TIMEOUT_DOOR_ACTION_FALLBACK, timeout, [this, action, before]() {
         const DoorState state = *this->door_state;
         const bool reached = action == DoorAction::OPEN
