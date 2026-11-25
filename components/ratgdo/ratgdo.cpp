@@ -819,6 +819,7 @@ void RATGDOComponent::door_open()
     enc_intended_dir_ = 1;
 #endif
     this->door_action(DoorAction::OPEN);
+    this->ensure_door_action(DoorAction::OPEN);
 
     if (*this->opening_duration > 0) {
         // query state in case we don't get a status message
@@ -865,6 +866,7 @@ void RATGDOComponent::door_close()
         this->on_door_state([this](DoorState s) {
             if (s == DoorState::STOPPED) {
                 this->door_action(DoorAction::CLOSE);
+                this->ensure_door_action(DoorAction::CLOSE);
             } else {
                 ESP_LOGW(TAG, "Door did not stop, ignoring close command");
             }
@@ -881,6 +883,7 @@ void RATGDOComponent::door_close()
     // Always use an explicit CLOSE command: without a directly wired obstruction
     // sensor the door otherwise only closes when fully open.
     this->door_action(DoorAction::CLOSE);
+    this->ensure_door_action(DoorAction::CLOSE);
 
     if (*this->closing_duration > 0) {
         // query state in case we don't get a status message
@@ -911,6 +914,7 @@ void RATGDOComponent::door_toggle() { this->door_action(DoorAction::TOGGLE); }
 
 void RATGDOComponent::door_action(DoorAction action)
 {
+    this->cancel_timeout(TIMEOUT_DOOR_ACTION_FALLBACK);
 #ifdef RATGDO_USE_CLOSING_DELAY
     if (*this->closing_delay > 0 && (action == DoorAction::CLOSE || (action == DoorAction::TOGGLE && *this->door_state != DoorState::CLOSED))) {
         this->door_action_delayed = DoorActionDelayed::YES;
@@ -923,6 +927,40 @@ void RATGDOComponent::door_action(DoorAction action)
     }
 #else
     this->protocol_->door_action(action);
+#endif
+}
+
+void RATGDOComponent::ensure_door_action(DoorAction action, uint32_t delay)
+{
+#ifdef PROTOCOL_SECPLUSV2
+    if (action != DoorAction::OPEN && action != DoorAction::CLOSE) {
+        return;
+    }
+    const DoorState before = *this->door_state;
+    if ((action == DoorAction::OPEN && before == DoorState::OPEN)
+        || (action == DoorAction::CLOSE && before == DoorState::CLOSED)) {
+        return;
+    }
+
+    uint32_t timeout = delay;
+    if (action == DoorAction::CLOSE) {
+        timeout += *this->closing_delay * 1000;
+    }
+    this->set_timeout(TIMEOUT_DOOR_ACTION_FALLBACK, timeout, [this, action, before]() {
+        const DoorState state = *this->door_state;
+        const bool reached = action == DoorAction::OPEN
+            ? (state == DoorState::OPENING || state == DoorState::OPEN)
+            : (state == DoorState::CLOSING || state == DoorState::CLOSED);
+        if (state != before || reached) {
+            return;
+        }
+        ESP_LOGW(TAG, "Door %s command had no effect, using TOGGLE as last resort",
+            action == DoorAction::OPEN ? "open" : "close");
+        this->door_action(DoorAction::TOGGLE);
+    });
+#else
+    (void) action;
+    (void) delay;
 #endif
 }
 

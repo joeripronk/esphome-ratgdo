@@ -25,6 +25,7 @@ namespace secplus2 {
     using namespace esphome::ratgdo::protocol;
 
     static const uint8_t PACKET_LENGTH = 19;
+    static constexpr uint8_t MAX_DEFERRED_COMMANDS = 8;
     static constexpr uint32_t STATUS_WATCHDOG_TIMEOUT = 360000; // 6 min. status updates are normally every ~5 min
     static constexpr uint32_t STATUS_WATCHDOG_POLL = 60000; // check once per minute
     typedef uint8_t WirePacket[PACKET_LENGTH];
@@ -122,27 +123,12 @@ namespace secplus2 {
         void handle_command(const Command& cmd);
 
         void send_command(Command cmd, IncrementRollingCode increment = IncrementRollingCode::YES);
-        template <typename F>
-        void send_command(Command cmd, IncrementRollingCode increment, F&& on_sent)
-        {
-            // Only register the callback if the command will be accepted.
-            // If transmit_pending is set the command will be dropped, and
-            // a stale callback would fire when the previous pending packet
-            // transmits -- executing logic (e.g. the second phase of a
-            // door_command) at the wrong time.
-            //
-            // Register before send_command() because transmit_packet() may
-            // succeed immediately and call on_command_sent_.trigger() inline.
-            if (this->flags_.transmit_pending) {
-                return;
-            }
-            this->on_command_sent_(std::forward<F>(on_sent));
-            this->send_command(cmd, increment);
-        }
         void encode_packet(Command cmd, WirePacket& packet);
         bool transmit_packet();
 
         void door_command(DoorAction action);
+        void start_door_action_frame();
+        void send_deferred_command();
 
         void query_status();
         void query_openings();
@@ -172,6 +158,7 @@ namespace secplus2 {
         uint32_t rx_msg_start_ { 0 };
         uint32_t rx_last_read_ { 0 };
         uint32_t last_status_ms_ { 0 };
+        uint32_t last_command_ms_ { 0 };
 
         // Larger structures
         single_observable<uint32_t> rolling_code_counter_ { 0 };
@@ -186,6 +173,13 @@ namespace secplus2 {
         // Small members at the end
         uint16_t rx_byte_count_ { 0 };
         LearnState learn_state_ { LearnState::UNKNOWN };
+        DoorAction door_action_ { DoorAction::UNKNOWN };
+        Command deferred_commands_[MAX_DEFERRED_COMMANDS] {};
+        uint8_t door_action_phase_ { 0 };
+        uint8_t door_action_retries_ { 0 };
+        uint8_t deferred_count_ { 0 };
+        bool door_action_in_progress_ { false };
+        bool deferred_increments_[MAX_DEFERRED_COMMANDS] { };
         struct {
             uint8_t transmit_pending : 1;
             uint8_t rx_reading_msg : 1;

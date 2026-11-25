@@ -29,6 +29,10 @@ namespace secplus2 {
     // results in the rolling counter being behind what the GDO
     // expects.
     static const uint8_t MAX_CODES_WITHOUT_FLASH_WRITE = 60;
+    static constexpr uint32_t COMMAND_GAP_MS = 50;
+    static constexpr uint32_t DOOR_ACTION_RETRY_MS = 100;
+    static constexpr uint8_t DOOR_ACTION_MAX_RETRIES = 10;
+    static constexpr uint32_t DOOR_ACTION_WATCHDOG_MS = 5000;
 
     ESPHOME_LOG_TAG(TAG, "ratgdo_secplus2");
 
@@ -55,6 +59,8 @@ namespace secplus2 {
                 return;
             }
         }
+
+        this->send_deferred_command();
 
         auto cmd = this->read_command();
         if (cmd) {
@@ -203,11 +209,82 @@ namespace secplus2 {
 
     void Secplus2::door_command(DoorAction action)
     {
-        this->send_command(Command(CommandType::DOOR_ACTION, static_cast<uint8_t>(action), 1, 1), IncrementRollingCode::NO, [this, action]() {
-            this->ratgdo_->set_timeout(150, [this, action] {
-                this->send_command(Command(CommandType::DOOR_ACTION, static_cast<uint8_t>(action), 0, 1));
-            });
+        this->on_command_sent_.clear();
+        this->door_action_ = action;
+        this->door_action_phase_ = 1;
+        this->door_action_retries_ = 0;
+        this->door_action_in_progress_ = true;
+        this->scheduler_->cancel_timeout(this->ratgdo_, TIMEOUT_DOOR_ACTION_WATCHDOG);
+        this->scheduler_->set_timeout(this->ratgdo_, TIMEOUT_DOOR_ACTION_WATCHDOG, DOOR_ACTION_WATCHDOG_MS, [this]() {
+            if (!this->door_action_in_progress_) {
+                return;
+            }
+            ESP_LOGW(TAG, "Door action transaction timed out");
+            this->door_action_in_progress_ = false;
+            this->door_action_phase_ = 0;
+            this->on_command_sent_.clear();
         });
+        this->start_door_action_frame();
+    }
+
+    void Secplus2::start_door_action_frame()
+    {
+        if (!this->door_action_in_progress_) {
+            return;
+        }
+        if (this->flags_.transmit_pending) {
+            if (++this->door_action_retries_ > DOOR_ACTION_MAX_RETRIES) {
+                ESP_LOGW(TAG, "Door action dropped, GDO line busy");
+                this->door_action_in_progress_ = false;
+                this->door_action_phase_ = 0;
+                this->scheduler_->cancel_timeout(this->ratgdo_, TIMEOUT_DOOR_ACTION_WATCHDOG);
+                return;
+            }
+            this->scheduler_->set_timeout(this->ratgdo_, TIMEOUT_DOOR_ACTION_RETRY, DOOR_ACTION_RETRY_MS, [this]() {
+                this->start_door_action_frame();
+            });
+            return;
+        }
+
+        const bool press = this->door_action_phase_ == 1;
+        this->on_command_sent_([this, press]() {
+            if (press) {
+                this->scheduler_->set_timeout(this->ratgdo_, TIMEOUT_DOOR_ACTION_RELEASE, 150, [this]() {
+                    if (!this->door_action_in_progress_) {
+                        return;
+                    }
+                    this->door_action_phase_ = 2;
+                    this->start_door_action_frame();
+                });
+            } else {
+                this->door_action_in_progress_ = false;
+                this->door_action_phase_ = 0;
+                this->scheduler_->cancel_timeout(this->ratgdo_, TIMEOUT_DOOR_ACTION_WATCHDOG);
+            }
+        });
+        this->send_command(
+            Command(CommandType::DOOR_ACTION, static_cast<uint8_t>(this->door_action_), press ? 1 : 0, 1),
+            press ? IncrementRollingCode::NO : IncrementRollingCode::YES);
+    }
+
+    void Secplus2::send_deferred_command()
+    {
+        if (this->deferred_count_ == 0 || this->door_action_in_progress_ || this->flags_.transmit_pending) {
+            return;
+        }
+        if (millis() - this->last_command_ms_ < COMMAND_GAP_MS) {
+            return;
+        }
+        const Command command = this->deferred_commands_[0];
+        const IncrementRollingCode increment = this->deferred_increments_[0]
+            ? IncrementRollingCode::YES
+            : IncrementRollingCode::NO;
+        for (uint8_t i = 1; i < this->deferred_count_; i++) {
+            this->deferred_commands_[i - 1] = this->deferred_commands_[i];
+            this->deferred_increments_[i - 1] = this->deferred_increments_[i];
+        }
+        this->deferred_count_--;
+        this->send_command(command, increment);
     }
 
     void Secplus2::query_status()
@@ -447,6 +524,18 @@ namespace secplus2 {
 
     void Secplus2::send_command(Command command, IncrementRollingCode increment)
     {
+        if (command.type != CommandType::DOOR_ACTION
+            && (this->door_action_in_progress_ || millis() - this->last_command_ms_ < COMMAND_GAP_MS)) {
+            if (this->deferred_count_ < MAX_DEFERRED_COMMANDS) {
+                this->deferred_commands_[this->deferred_count_] = command;
+                this->deferred_increments_[this->deferred_count_] = increment == IncrementRollingCode::YES;
+                this->deferred_count_++;
+            } else {
+                ESP_LOGW(TAG, "Dropping command, command queue full: %s",
+                    LOG_STR_ARG(CommandType_to_string(command.type)));
+            }
+            return;
+        }
         {
             uint8_t data[] = { command.byte2, command.byte1, command.nibble };
             constexpr size_t hex_size = format_hex_pretty_size(3);
@@ -468,6 +557,7 @@ namespace secplus2 {
             }
         }
         this->transmit_packet();
+        this->last_command_ms_ = millis();
     }
 
     void Secplus2::encode_packet(Command command, WirePacket& packet)

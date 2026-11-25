@@ -307,6 +307,7 @@ public:
     void sync();
 
     using Component::cancel_interval;
+    using Component::cancel_timeout;
     using Component::set_interval;
     using Component::set_timeout;
 
@@ -567,6 +568,10 @@ namespace scheduler_ids {
         TIMEOUT_SYNC,
         INTERVAL_STATUS_WATCHDOG,
         TIMEOUT_ENCODER_STOPPED,
+        TIMEOUT_DOOR_ACTION_FALLBACK,
+        TIMEOUT_DOOR_ACTION_RETRY,
+        TIMEOUT_DOOR_ACTION_RELEASE,
+        TIMEOUT_DOOR_ACTION_WATCHDOG,
     };
 } // namespace scheduler_ids
 
